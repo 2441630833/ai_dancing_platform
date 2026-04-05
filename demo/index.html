@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MediaPipe Pose Demo</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d9eff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: system-ui, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1rem;
+    }
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 0 0 0.5rem;
+    }
+    p.sub {
+      margin: 0 0 1rem;
+      color: var(--muted);
+      font-size: 0.9rem;
+      max-width: 42rem;
+      text-align: center;
+      line-height: 1.45;
+    }
+    .wrap {
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      background: #000;
+    }
+    video, canvas {
+      display: block;
+      max-width: min(96vw, 960px);
+      height: auto;
+    }
+    video { transform: scaleX(-1); }
+    canvas {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .status {
+      margin-top: 1rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .status.error { color: #f87171; }
+    .status.ok { color: #4ade80; }
+    .controls {
+      margin-top: 0.75rem;
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: center;
+    }
+    label {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    input[type="checkbox"] { accent-color: var(--accent); }
+  </style>
+</head>
+<body>
+  <h1>MediaPipe Pose Landmarker</h1>
+  <p class="sub">
+    Live body pose tracking in the browser. Allow camera access. For best results, serve this folder over
+    <code>http://localhost</code> (see <code>run_demo.bat</code> in this directory).
+  </p>
+  <div class="wrap">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+  <div class="controls">
+    <label><input type="checkbox" id="drawBones" checked /> Draw skeleton</label>
+    <label><input type="checkbox" id="drawPoints" checked /> Draw joints</label>
+  </div>
+  <p id="status" class="status">Loading model…</p>
+
+  <script type="module">
+    import {
+      PoseLandmarker,
+      FilesetResolver,
+    } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+
+    const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+    const MODEL_URL =
+      'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const drawBonesEl = document.getElementById('drawBones');
+    const drawPointsEl = document.getElementById('drawPoints');
+
+    function setStatus(msg, cls = '') {
+      statusEl.textContent = msg;
+      statusEl.className = 'status ' + cls;
+    }
+
+    let poseLandmarker;
+    let lastTime = -1;
+
+    async function init() {
+      const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
+      poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: MODEL_URL,
+        },
+        runningMode: 'VIDEO',
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+      setStatus('Model ready. Starting camera…', 'ok');
+    }
+
+    function resizeCanvas() {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (!w || !h) return;
+      canvas.width = w;
+      canvas.height = h;
+    }
+
+    /** Map normalized x to canvas x so overlay matches CSS-mirrored video. */
+    function nx(x) {
+      return (1 - x) * canvas.width;
+    }
+
+    function drawConnectors(landmarks, connections, style) {
+      ctx.save();
+      ctx.strokeStyle = style.stroke;
+      ctx.lineWidth = style.lineWidth;
+      for (const conn of connections) {
+        const a = landmarks[conn.start];
+        const b = landmarks[conn.end];
+        if (!a || !b) continue;
+        if ((a.visibility ?? 1) < 0.3 || (b.visibility ?? 1) < 0.3) continue;
+        ctx.beginPath();
+        ctx.moveTo(nx(a.x), a.y * canvas.height);
+        ctx.lineTo(nx(b.x), b.y * canvas.height);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawLandmarks(landmarks, style) {
+      ctx.save();
+      ctx.fillStyle = style.fill;
+      const r = style.radius;
+      for (const lm of landmarks) {
+        if ((lm.visibility ?? 1) < 0.3) continue;
+        ctx.beginPath();
+        ctx.arc(nx(lm.x), lm.y * canvas.height, r, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function renderLoop() {
+      const now = performance.now();
+      if (video.readyState >= 2 && poseLandmarker) {
+        if (video.currentTime !== lastTime) {
+          lastTime = video.currentTime;
+          resizeCanvas();
+          const result = poseLandmarker.detectForVideo(video, now);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const connections = PoseLandmarker.POSE_CONNECTIONS;
+          const lineStyle = { stroke: 'rgba(61, 158, 255, 0.95)', lineWidth: 4 };
+          const pointStyle = { fill: 'rgba(255, 200, 80, 0.95)', radius: 5 };
+          for (const pose of result.landmarks) {
+            if (drawBonesEl.checked) {
+              drawConnectors(pose, connections, lineStyle);
+            }
+            if (drawPointsEl.checked) {
+              drawLandmarks(pose, pointStyle);
+            }
+          }
+        }
+      }
+      requestAnimationFrame(renderLoop);
+    }
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        video.srcObject = stream;
+        await video.play();
+        setStatus('Running — pose overlay on mirrored preview.', 'ok');
+      } catch (e) {
+        setStatus(
+          'Camera error: ' + (e && e.message ? e.message : String(e)) +
+            ' — use https:// or http://localhost and allow permissions.',
+          'error',
+        );
+      }
+    }
+
+    await init();
+    await startCamera();
+    requestAnimationFrame(renderLoop);
+  </script>
+</body>
+</html>
