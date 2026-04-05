@@ -32,6 +32,31 @@ PARENT: dict[str, str | None] = {
     "RightHand": "RightForeArm",
 }
 
+PRIMARY_CHILD: dict[str, str | None] = {
+    "Hips": "Spine",
+    "Spine": "Spine1",
+    "Spine1": "Spine2",
+    "Spine2": "Neck",
+    "Neck": "Head",
+    "Head": None,
+    "LeftShoulder": "LeftArm",
+    "LeftArm": "LeftForeArm",
+    "LeftForeArm": "LeftHand",
+    "LeftHand": None,
+    "RightShoulder": "RightArm",
+    "RightArm": "RightForeArm",
+    "RightForeArm": "RightHand",
+    "RightHand": None,
+    "LeftUpLeg": "LeftLeg",
+    "LeftLeg": "LeftFoot",
+    "LeftFoot": "LeftToe",
+    "LeftToe": None,
+    "RightUpLeg": "RightLeg",
+    "RightLeg": "RightFoot",
+    "RightFoot": "RightToe",
+    "RightToe": None,
+}
+
 DFS_ORDER: list[str] = [
     "Hips",
     "LeftUpLeg",
@@ -139,39 +164,43 @@ def _bind_offsets_m(rest: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     }
 
 
-def _r_world_chain(pos: dict[str, np.ndarray], offsets_m: dict[str, np.ndarray]) -> dict[str, R]:
+def _compute_rotations(pos: dict[str, np.ndarray], offsets_m: dict[str, np.ndarray]) -> tuple[dict[str, R], dict[str, R]]:
     r_world: dict[str, R] = {}
+    r_local: dict[str, R] = {}
+    
     r_world["Hips"] = _pelvis_rotation(pos)
+    r_local["Hips"] = r_world["Hips"]
+    
     for name in DFS_ORDER:
         if name == "Hips":
             continue
+            
         p = PARENT[name]
         assert p is not None
         rp = r_world[p]
-        delta_w = pos[name] - pos[p]
-        v_parent = rp.inv().apply(delta_w)
-        o = offsets_m[name]
-        no = np.linalg.norm(o)
-        nv = np.linalg.norm(v_parent)
-        if no < 1e-10 or nv < 1e-10:
-            r_local = R.identity()
-        else:
-            r_local = _rot_align(o / no, v_parent / nv)
-        r_world[name] = rp * r_local
-    return r_world
-
-
-def _local_from_world(r_world: dict[str, R]) -> dict[str, R]:
-    """BVH motion stores local rotation per joint; root is world space."""
-    r_local: dict[str, R] = {}
-    r_local["Hips"] = r_world["Hips"]
-    for name in DFS_ORDER:
-        if name == "Hips":
+        
+        child = PRIMARY_CHILD.get(name)
+        if child is None:
+            r_local[name] = R.identity()
+            r_world[name] = rp
             continue
-        p = PARENT[name]
-        assert p is not None
-        r_local[name] = r_world[p].inv() * r_world[name]
-    return r_local
+            
+        delta_w = pos[child] - pos[name]
+        v_parent = rp.inv().apply(delta_w)
+        
+        o_child = offsets_m[child]
+        no = np.linalg.norm(o_child)
+        nv = np.linalg.norm(v_parent)
+        
+        if no < 1e-10 or nv < 1e-10:
+            rl = R.identity()
+        else:
+            rl = _rot_align(o_child / no, v_parent / nv)
+            
+        r_local[name] = rl
+        r_world[name] = rp * rl
+        
+    return r_world, r_local
 
 
 def _emit_hierarchy(rest: dict[str, np.ndarray], offsets_m: dict[str, np.ndarray]) -> str:
@@ -224,8 +253,7 @@ def positions_to_bvh(
     motion_lines = [f"Frames: {nframes}", f"Frame Time: {dt:.6f}"]
 
     for fr in frames:
-        r_w = _r_world_chain(fr, offsets_m)
-        r_l = _local_from_world(r_w)
+        r_w, r_l = _compute_rotations(fr, offsets_m)
         parts: list[float] = []
         h = fr["Hips"] * CM
         rh = r_l["Hips"]
