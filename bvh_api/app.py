@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from pose_pipeline import video_to_bvh
 
@@ -22,7 +22,26 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/v1/bvh", response_class=PlainTextResponse)
+def _safe_bvh_filename(mp4_filename: str) -> str:
+    stem = Path(mp4_filename).stem
+    safe_stem = "".join(c if c.isalnum() or c in "._-" else "_" for c in stem) or "motion"
+    return f"{safe_stem}.bvh"
+
+
+@app.post(
+    "/v1/bvh",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "BVH motion capture text (UTF-8); save as .bvh",
+            "content": {
+                "text/plain": {
+                    "schema": {"type": "string", "format": "binary"},
+                },
+            },
+        },
+    },
+)
 async def convert_to_bvh(upload: UploadFile = File(...)):
     if not upload.filename:
         raise HTTPException(400, "missing filename")
@@ -40,11 +59,17 @@ async def convert_to_bvh(upload: UploadFile = File(...)):
         tmp.write(content)
         tmp.close()
         bvh, meta = video_to_bvh(tmp_path)
+        out_name = _safe_bvh_filename(upload.filename)
         headers = {
+            "Content-Disposition": f'attachment; filename="{out_name}"',
             "X-Frames": str(meta.get("frames", "")),
             "X-FPS": str(meta.get("fps", "")),
         }
-        return PlainTextResponse(bvh, media_type="text/plain", headers=headers)
+        return Response(
+            content=bvh.encode("utf-8"),
+            media_type="text/plain; charset=utf-8",
+            headers=headers,
+        )
     except HTTPException:
         raise
     except FileNotFoundError as e:
