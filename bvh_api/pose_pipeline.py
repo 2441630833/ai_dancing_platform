@@ -11,12 +11,9 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from mediapipe.tasks.python.vision.drawing_utils import DrawingSpec, draw_landmarks
-from mediapipe.tasks.python.vision.drawing_styles import get_default_pose_landmarks_style
-from mediapipe.tasks.python.vision.pose_landmarker import PoseLandmarksConnections
 from PIL import Image
 
-from bvh_export import positions_to_bvh
+from bvh_export import PARENT, positions_to_bvh
 from humanik_mapping import JOINT_ORDER, joint_positions_to_stacked, landmarks_to_joint_positions
 from smooth import smooth_positions
 
@@ -53,15 +50,40 @@ def _resize_bgr_max_width(bgr: np.ndarray, max_w: int) -> np.ndarray:
     return cv2.resize(bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
-def _draw_pose_skeleton(bgr: np.ndarray, normalized_landmarks: list) -> None:
-    """Draw MediaPipe pose on BGR image in place."""
-    draw_landmarks(
-        bgr,
-        normalized_landmarks,
-        PoseLandmarksConnections.POSE_LANDMARKS,
-        landmark_drawing_spec=get_default_pose_landmarks_style(),
-        connection_drawing_spec=DrawingSpec(color=(245, 250, 250), thickness=3),
-    )
+def _joint_px(
+    joint_pos: dict[str, np.ndarray], name: str, w: int, h: int
+) -> tuple[int, int] | None:
+    """Map normalized image joint (x,y) to pixel coords; matches BVH joint definitions."""
+    p = joint_pos[name]
+    x, y = float(p[0]), float(p[1])
+    if not (np.isfinite(x) and np.isfinite(y)):
+        return None
+    xi = int(np.clip(round(x * w), 0, w - 1))
+    yi = int(np.clip(round(y * h), 0, h - 1))
+    return (xi, yi)
+
+
+def _draw_bvh_skeleton_2d(bgr: np.ndarray, joint_pos: dict[str, np.ndarray]) -> None:
+    """
+    Draw the same 22-joint tree as BVH export (PARENT) using image-space joint centers.
+
+    joint_pos must come from landmarks_to_joint_positions applied to pose_landmarks
+    (normalized x,y), after the same temporal smoothing as the world-space stack used for BVH.
+    """
+    h, w = bgr.shape[:2]
+    line_bgr = (0, 255, 255)
+    pt_bgr = (255, 128, 0)
+    for child, par in PARENT.items():
+        if par is None:
+            continue
+        a = _joint_px(joint_pos, par, w, h)
+        b = _joint_px(joint_pos, child, w, h)
+        if a and b:
+            cv2.line(bgr, a, b, line_bgr, 2, cv2.LINE_AA)
+    for name in JOINT_ORDER:
+        pt = _joint_px(joint_pos, name, w, h)
+        if pt:
+            cv2.circle(bgr, pt, 3, pt_bgr, -1, cv2.LINE_AA)
 
 
 def _bgr_frames_to_gif_bytes(frames: list[np.ndarray], fps: float) -> bytes:
@@ -91,6 +113,37 @@ def _subsample_frames(frames: list[np.ndarray], max_frames: int) -> list[np.ndar
     return [frames[int(i)] for i in idx]
 
 
+def _root_local_frames(
+    frames: list[dict[str, np.ndarray]],
+) -> list[dict[str, np.ndarray]]:
+    """Shift skeleton so Hips start at X=0, Z=0 and the lowest foot is at Y=0."""
+    h0 = frames[0]["Hips"].copy()
+    min_y = min(p[1] for p in frames[0].values())
+    offset = np.array([h0[0], min_y, h0[2]], dtype=np.float64)
+    return [{k: v - offset for k, v in fr.items()} for fr in frames]
+
+
+def joint_frames_to_csv(frames: list[dict[str, np.ndarray]], fps: float) -> str:
+    """
+    Same joint world positions as fed to positions_to_bvh (meters * 100 -> cm), wide CSV.
+    Use for debugging / plotting; not identical to BVH Euler FK playback.
+    """
+    cm = 100.0
+    cols = ["frame", "time_sec"]
+    for name in JOINT_ORDER:
+        cols.extend([f"{name}_x_cm", f"{name}_y_cm", f"{name}_z_cm"])
+    lines: list[str] = [",".join(cols)]
+    inv_fps = 1.0 / max(fps, 1e-6)
+    for i, fr in enumerate(frames):
+        t = i * inv_fps
+        parts = [str(i), f"{t:.6f}"]
+        for name in JOINT_ORDER:
+            p = fr[name] * cm
+            parts.extend(f"{float(p[j]):.6f}" for j in range(3))
+        lines.append(",".join(parts))
+    return "\n".join(lines) + "\n"
+
+
 def video_to_bvh(
     video_path: str | Path,
     *,
@@ -99,12 +152,21 @@ def video_to_bvh(
     preview_gif: bool = False,
     preview_max_width: int = 640,
     gif_max_frames: int = 480,
+    bvh_root_local: bool = True,
+    return_joints_csv: bool = False,
 ) -> tuple[str, dict]:
     """
     Returns (bvh_text, meta) where meta includes fps, frame count, warnings.
 
-    If preview_gif is True, meta also contains preview_gif_bytes (MP4 frames with
-    skeleton overlay, GIF-encoded; may be subsampled to gif_max_frames).
+    If preview_gif is True, meta also contains preview_gif_bytes: each frame shows the
+    same 22-joint BVH topology (PARENT) drawn from image landmarks, using the same
+    landmarks_to_joint_positions recipe and the same temporal smoothing as the BVH
+    world-space stack (2D overlay vs 3D rotation encoding in the file may still differ).
+
+    bvh_root_local (default True): shift whole skeleton so frame-0 Hips is at origin
+    before BVH export (reduces MediaPipe world drift; better for Blender retargeting).
+
+    return_joints_csv: if True, meta includes joints_csv (wide CSV, positions in cm).
     """
     path = Path(video_path)
     if not path.is_file():
@@ -130,7 +192,8 @@ def video_to_bvh(
     landmarker = vision.PoseLandmarker.create_from_options(options)
 
     raw: list[np.ndarray] = []
-    preview_frames: list[np.ndarray] | None = [] if preview_gif else None
+    raw_img: list[np.ndarray] | None = [] if preview_gif else None
+    preview_bg: list[np.ndarray] | None = [] if preview_gif else None
     ts = 0
     n_read = 0
     missed = 0
@@ -162,12 +225,13 @@ def video_to_bvh(
             else:
                 raw.append(np.full((len(JOINT_ORDER), 3), np.nan, dtype=np.float64))
 
-        if preview_frames is not None:
-            vis = _resize_bgr_max_width(bgr, preview_max_width)
-            vis = vis.copy()
+        if preview_bg is not None and raw_img is not None:
+            preview_bg.append(_resize_bgr_max_width(bgr, preview_max_width))
             if last_img_lm is not None:
-                _draw_pose_skeleton(vis, last_img_lm)
-            preview_frames.append(vis)
+                jpi = landmarks_to_joint_positions(last_img_lm)
+                raw_img.append(joint_positions_to_stacked(jpi))
+            else:
+                raw_img.append(np.full((len(JOINT_ORDER), 3), np.nan, dtype=np.float64))
 
     cap.release()
     landmarker.close()
@@ -176,6 +240,11 @@ def video_to_bvh(
         raise RuntimeError("no frames read from video")
 
     arr = np.stack(raw, axis=0)
+    
+    # Convert MediaPipe World (Y down, Z forward) to BVH World (Y up, Z backward)
+    arr[..., 1] *= -1.0
+    arr[..., 2] *= -1.0
+
     # Fill NaN (no pose at start) with first valid
     valid = ~np.isnan(arr).any(axis=(1, 2))
     if not valid.any():
@@ -191,8 +260,31 @@ def video_to_bvh(
         arr = smooth_positions(arr, fps)
 
     frames = _stack_to_frames(arr)
+    if bvh_root_local:
+        frames = _root_local_frames(frames)
     rest = frames[0]
     bvh = positions_to_bvh(frames, fps, rest=rest)
+
+    joints_csv: str | None = None
+    if return_joints_csv:
+        joints_csv = joint_frames_to_csv(frames, fps)
+
+    preview_frames: list[np.ndarray] | None = None
+    if preview_gif and preview_bg is not None and raw_img is not None:
+        img_arr = np.stack(raw_img, axis=0)
+        for i in range(first):
+            img_arr[i] = img_arr[first]
+        for i in range(first, len(img_arr)):
+            if np.isnan(img_arr[i]).any():
+                img_arr[i] = img_arr[i - 1]
+        if smooth:
+            img_arr = smooth_positions(img_arr, fps)
+        frames_2d = _stack_to_frames(img_arr)
+        preview_frames = []
+        for t, bg in enumerate(preview_bg):
+            vis = bg.copy()
+            _draw_bvh_skeleton_2d(vis, frames_2d[t])
+            preview_frames.append(vis)
 
     meta: dict = {
         "fps": fps,
@@ -202,7 +294,11 @@ def video_to_bvh(
         "frames_read": n_read,
         "frames_without_detection": missed,
         "model": "pose_landmarker_lite",
+        "preview_matches_bvh_topology": bool(preview_frames),
+        "bvh_root_local": bvh_root_local,
     }
+    if joints_csv is not None:
+        meta["joints_csv"] = joints_csv
     if preview_frames is not None:
         gif_src = _subsample_frames(preview_frames, gif_max_frames)
         gif_fps = fps * (len(gif_src) / max(len(preview_frames), 1))

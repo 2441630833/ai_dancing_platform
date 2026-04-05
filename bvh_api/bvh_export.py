@@ -9,34 +9,42 @@ from humanik_mapping import JOINT_ORDER
 
 PARENT: dict[str, str | None] = {
     "Hips": None,
-    "Spine": "Hips",
-    "Spine1": "Spine",
-    "Chest": "Spine1",
-    "Neck": "Chest",
-    "Head": "Neck",
-    "LeftShoulder": "Chest",
-    "LeftArm": "LeftShoulder",
-    "LeftForeArm": "LeftArm",
-    "LeftHand": "LeftForeArm",
-    "RightShoulder": "Chest",
-    "RightArm": "RightShoulder",
-    "RightForeArm": "RightArm",
-    "RightHand": "RightForeArm",
     "LeftUpLeg": "Hips",
     "LeftLeg": "LeftUpLeg",
     "LeftFoot": "LeftLeg",
-    "LeftToeBase": "LeftFoot",
+    "LeftToe": "LeftFoot",
     "RightUpLeg": "Hips",
     "RightLeg": "RightUpLeg",
     "RightFoot": "RightLeg",
-    "RightToeBase": "RightFoot",
+    "RightToe": "RightFoot",
+    "Spine": "Hips",
+    "Spine1": "Spine",
+    "Spine2": "Spine1",
+    "Neck": "Spine2",
+    "Head": "Neck",
+    "LeftShoulder": "Spine2",
+    "LeftArm": "LeftShoulder",
+    "LeftForeArm": "LeftArm",
+    "LeftHand": "LeftForeArm",
+    "RightShoulder": "Spine2",
+    "RightArm": "RightShoulder",
+    "RightForeArm": "RightArm",
+    "RightHand": "RightForeArm",
 }
 
 DFS_ORDER: list[str] = [
     "Hips",
+    "LeftUpLeg",
+    "LeftLeg",
+    "LeftFoot",
+    "LeftToe",
+    "RightUpLeg",
+    "RightLeg",
+    "RightFoot",
+    "RightToe",
     "Spine",
     "Spine1",
-    "Chest",
+    "Spine2",
     "Neck",
     "Head",
     "LeftShoulder",
@@ -47,25 +55,17 @@ DFS_ORDER: list[str] = [
     "RightArm",
     "RightForeArm",
     "RightHand",
-    "LeftUpLeg",
-    "LeftLeg",
-    "LeftFoot",
-    "LeftToeBase",
-    "RightUpLeg",
-    "RightLeg",
-    "RightFoot",
-    "RightToeBase",
 ]
 
-CM = 100.0
+CM = 1.0
 
 
 def _pelvis_rotation(pos: dict[str, np.ndarray]) -> R:
     lh = pos["LeftUpLeg"]
     rh = pos["RightUpLeg"]
-    chest = pos["Chest"]
+    chest = pos["Spine2"]
     hips = pos["Hips"]
-    x = rh - lh
+    x = lh - rh
     x = x / (np.linalg.norm(x) + 1e-12)
     y = chest - hips
     y = y / (np.linalg.norm(y) + 1e-12)
@@ -113,15 +113,30 @@ def _rest_rotations(rest: dict[str, np.ndarray]) -> dict[str, R]:
 
 
 def _bind_offsets_m(rest: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    r_rest = _rest_rotations(rest)
-    out: dict[str, np.ndarray] = {}
-    for name in DFS_ORDER:
-        if name == "Hips":
-            continue
-        p = PARENT[name]
-        assert p is not None
-        out[name] = r_rest[p].inv().apply(rest[name] - rest[p])
-    return out
+    return {
+        "Hips": np.array([-0.001795, -0.223333, 0.028219]),
+        "LeftUpLeg": np.array([0.069520, -0.091406, -0.006815]),
+        "LeftLeg": np.array([0.034277, -0.375199, -0.004496]),
+        "LeftFoot": np.array([-0.013596, -0.397961, -0.043693]),
+        "LeftToe": np.array([0.026358, -0.055791, 0.119288]),
+        "RightUpLeg": np.array([-0.067670, -0.090522, -0.004320]),
+        "RightLeg": np.array([-0.038290, -0.382569, -0.008850]),
+        "RightFoot": np.array([0.015774, -0.398415, -0.042312]),
+        "RightToe": np.array([-0.025372, -0.048144, 0.123348]),
+        "Spine": np.array([-0.002533, 0.108963, -0.026696]),
+        "Spine1": np.array([0.005487, 0.135180, 0.001092]),
+        "Spine2": np.array([0.001457, 0.052922, 0.025425]),
+        "Neck": np.array([-0.002778, 0.213870, -0.042857]),
+        "Head": np.array([0.005152, 0.064970, 0.051349]),
+        "LeftShoulder": np.array([0.078845, 0.121749, -0.034090]),
+        "LeftArm": np.array([0.090977, 0.030469, -0.008868]),
+        "LeftForeArm": np.array([0.259612, -0.012772, -0.027456]),
+        "LeftHand": np.array([0.249234, 0.008986, -0.001171]),
+        "RightShoulder": np.array([-0.081759, 0.118833, -0.038615]),
+        "RightArm": np.array([-0.096012, 0.032551, -0.009143]),
+        "RightForeArm": np.array([-0.253742, -0.013329, -0.021401]),
+        "RightHand": np.array([-0.255298, 0.007772, -0.005559]),
+    }
 
 
 def _r_world_chain(pos: dict[str, np.ndarray], offsets_m: dict[str, np.ndarray]) -> dict[str, R]:
@@ -167,31 +182,26 @@ def _emit_hierarchy(rest: dict[str, np.ndarray], offsets_m: dict[str, np.ndarray
         par = PARENT[name]
         children = [j for j in DFS_ORDER if PARENT.get(j) == name]
         if par is None:
+            o = offsets_m[name] * CM
             lines.append(f"{pad}ROOT {name}")
             lines.append(f"{pad}{{")
-            lines.append(f"{pad}\tOFFSET 0.0 0.0 0.0")
-            lines.append(f"{pad}\tCHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation")
+            lines.append(f"{pad}\tOFFSET {o[0]:.6f} {o[1]:.6f} {o[2]:.6f}")
+            lines.append(f"{pad}\tCHANNELS 6 Xposition Yposition Zposition Zrotation Yrotation Xrotation")
         else:
             o = offsets_m[name] * CM
             lines.append(f"{pad}JOINT {name}")
             lines.append(f"{pad}{{")
             lines.append(f"{pad}\tOFFSET {o[0]:.6f} {o[1]:.6f} {o[2]:.6f}")
-            lines.append(f"{pad}\tCHANNELS 3 Zrotation Xrotation Yrotation")
+            lines.append(f"{pad}\tCHANNELS 3 Zrotation Yrotation Xrotation")
 
         for ch in children:
             emit(ch, indent + 1)
 
         if not children:
             if par is not None:
-                eo = (rest[name] - rest[par]) * CM
-                el = np.linalg.norm(eo)
-                if el < 1e-6:
-                    eo = np.array([0.0, 5.0, 0.0])
-                else:
-                    eo = eo / el * min(el, 8.0)
                 lines.append(f"{pad}\tEnd Site")
                 lines.append(f"{pad}\t{{")
-                lines.append(f"{pad}\t\tOFFSET {eo[0]:.6f} {eo[1]:.6f} {eo[2]:.6f}")
+                lines.append(f"{pad}\t\tOFFSET 0.000000 0.000000 0.000000")
                 lines.append(f"{pad}\t}}")
         lines.append(f"{pad}}}")
 
@@ -219,12 +229,12 @@ def positions_to_bvh(
         parts: list[float] = []
         h = fr["Hips"] * CM
         rh = r_l["Hips"]
-        ez = rh.as_euler("zxy", degrees=True)
+        ez = rh.as_euler("zyx", degrees=True)
         parts.extend([h[0], h[1], h[2], ez[0], ez[1], ez[2]])
         for name in DFS_ORDER:
             if name == "Hips":
                 continue
-            e = r_l[name].as_euler("zxy", degrees=True)
+            e = r_l[name].as_euler("zyx", degrees=True)
             parts.extend([e[0], e[1], e[2]])
         motion_lines.append(" ".join(f"{v:.6f}" for v in parts))
 

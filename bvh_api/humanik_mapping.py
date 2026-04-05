@@ -9,7 +9,7 @@ JOINT_ORDER = (
     "Hips",
     "Spine",
     "Spine1",
-    "Chest",
+    "Spine2",
     "Neck",
     "Head",
     "LeftShoulder",
@@ -23,11 +23,11 @@ JOINT_ORDER = (
     "LeftUpLeg",
     "LeftLeg",
     "LeftFoot",
-    "LeftToeBase",
+    "LeftToe",
     "RightUpLeg",
     "RightLeg",
     "RightFoot",
-    "RightToeBase",
+    "RightToe",
 )
 
 
@@ -58,7 +58,7 @@ def landmarks_to_joint_positions(lm) -> dict[str, np.ndarray]:
         "Hips": hips,
         "Spine": spine,
         "Spine1": spine1,
-        "Chest": chest,
+        "Spine2": chest,
         "Neck": neck,
         "Head": head,
         "LeftShoulder": left_shoulder,
@@ -72,11 +72,11 @@ def landmarks_to_joint_positions(lm) -> dict[str, np.ndarray]:
         "LeftUpLeg": left_up_leg,
         "LeftLeg": left_leg,
         "LeftFoot": left_foot,
-        "LeftToeBase": left_toe,
+        "LeftToe": left_toe,
         "RightUpLeg": right_up_leg,
         "RightLeg": right_leg,
         "RightFoot": right_foot,
-        "RightToeBase": right_toe,
+        "RightToe": right_toe,
     }
 
 
