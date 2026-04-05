@@ -107,6 +107,29 @@ See [bvh_api/BLENDER.md](bvh_api/BLENDER.md) for full details.
 
 ---
 
+## Browser Demo
+
+A live pose overlay demo runs entirely in the browser using the MediaPipe Tasks Vision WASM bundle — no install needed beyond Python for the local server.
+
+```bash
+cd demo
+python -m http.server 8765
+```
+
+Or on Windows just double-click / run:
+
+```bat
+demo\run_demo.bat
+```
+
+Then open `http://127.0.0.1:8765/` in your browser and allow camera access. You'll see real-time skeleton tracking overlaid on the mirrored webcam feed.
+
+> Must be served over `http://localhost` or `https://` — camera access is blocked on plain `file://` URLs.
+
+Controls on the page let you toggle the skeleton bones and joint dots independently.
+
+---
+
 ## Contributing
 
 Pull requests welcome. Please follow the [contribution guidelines](CONTRIBUTING.md).
