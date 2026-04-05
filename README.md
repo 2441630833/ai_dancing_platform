@@ -1,158 +1,112 @@
+# video2bvh
+
+Convert any MP4 video into BVH motion capture data using MediaPipe Pose Landmarker — no markers, no suits, just a video.
+
+Built on top of [MediaPipe](https://github.com/google/mediapipe), this project provides a local HTTP API that accepts a video file and returns a `.bvh` file ready to import into Blender, MotionBuilder, or any BVH-compatible tool.
+
 ---
-layout: forward
-target: https://developers.google.com/mediapipe
-title: Home
-nav_order: 1
+
+## How it works
+
+1. Upload an MP4 to the local API server
+2. MediaPipe detects 33 pose landmarks per frame
+3. Landmarks are mapped to a 22-joint BVH skeleton
+4. Smoothing is applied and the BVH file is returned
+
+No GPU required. Runs entirely on-device.
+
 ---
 
-----
+## Quick Start
 
-**Attention:** *We have moved to
-[https://developers.google.com/mediapipe](https://developers.google.com/mediapipe)
-as the primary developer documentation site for MediaPipe as of April 3, 2023.*
+**Install dependencies**
 
-![MediaPipe](https://developers.google.com/static/mediapipe/images/home/hero_01_1920.png)
+```bash
+cd bvh_api
+pip install -r requirements.txt
+```
 
-**Attention**: MediaPipe Solutions Preview is an early release. [Learn
-more](https://developers.google.com/mediapipe/solutions/about#notice).
+**Start the server**
 
-**On-device machine learning for everyone**
+```bash
+# Windows
+run_server.bat
 
-Delight your customers with innovative machine learning features. MediaPipe
-contains everything that you need to customize and deploy to mobile (Android,
-iOS), web, desktop, edge devices, and IoT, effortlessly.
+# or directly
+python -m uvicorn app:app --host 127.0.0.1 --port 8021
+```
 
-*   [See demos](https://goo.gle/mediapipe-studio)
-*   [Learn more](https://developers.google.com/mediapipe/solutions)
+Server runs at `http://127.0.0.1:8021`  
+Swagger UI (interactive docs): `http://127.0.0.1:8021/docs`
 
-## Get started
+---
 
-You can get started with MediaPipe Solutions by by checking out any of the
-developer guides for
-[vision](https://developers.google.com/mediapipe/solutions/vision/object_detector),
-[text](https://developers.google.com/mediapipe/solutions/text/text_classifier),
-and
-[audio](https://developers.google.com/mediapipe/solutions/audio/audio_classifier)
-tasks. If you need help setting up a development environment for use with
-MediaPipe Tasks, check out the setup guides for
-[Android](https://developers.google.com/mediapipe/solutions/setup_android), [web
-apps](https://developers.google.com/mediapipe/solutions/setup_web), and
-[Python](https://developers.google.com/mediapipe/solutions/setup_python).
+## API Overview
 
-## Solutions
+All endpoints accept `multipart/form-data` with an `upload` field containing your `.mp4` file.
 
-MediaPipe Solutions provides a suite of libraries and tools for you to quickly
-apply artificial intelligence (AI) and machine learning (ML) techniques in your
-applications. You can plug these solutions into your applications immediately,
-customize them to your needs, and use them across multiple development
-platforms. MediaPipe Solutions is part of the MediaPipe [open source
-project](https://github.com/google/mediapipe), so you can further customize the
-solutions code to meet your application needs.
+| Endpoint | Returns | Description |
+|---|---|---|
+| `GET /health` | JSON | Health check |
+| `POST /v1/bvh` | `.bvh` file | BVH motion capture data |
+| `POST /v1/bvh_preview.zip` | `.zip` | BVH + preview GIF + joints CSV |
+| `POST /v1/preview.gif` | `.gif` | Skeleton overlay animation |
+| `POST /v1/joints.csv` | `.csv` | 22-joint world positions in cm |
+| `POST /v1/bvh.json` | JSON | BVH text + metadata |
 
-These libraries and resources provide the core functionality for each MediaPipe
-Solution:
+### Common parameter
 
-*   **MediaPipe Tasks**: Cross-platform APIs and libraries for deploying
-    solutions. [Learn
-    more](https://developers.google.com/mediapipe/solutions/tasks).
-*   **MediaPipe models**: Pre-trained, ready-to-run models for use with each
-    solution.
+All `POST` endpoints accept `?bvh_root_local=true` (default). This shifts the skeleton so the Hips joint starts at the origin on frame 0 — recommended for Blender retargeting.
 
-These tools let you customize and evaluate solutions:
+### Quick example
 
-*   **MediaPipe Model Maker**: Customize models for solutions with your data.
-    [Learn more](https://developers.google.com/mediapipe/solutions/model_maker).
-*   **MediaPipe Studio**: Visualize, evaluate, and benchmark solutions in your
-    browser. [Learn
-    more](https://developers.google.com/mediapipe/solutions/studio).
+```bash
+curl -X POST "http://127.0.0.1:8021/v1/bvh?bvh_root_local=true" \
+  -F "upload=@my_video.mp4" \
+  -o output.bvh
+```
 
-### Legacy solutions
+```python
+import requests
 
-We have ended support for [these MediaPipe Legacy Solutions](https://developers.google.com/mediapipe/solutions/guide#legacy)
-as of March 1, 2023. All other MediaPipe Legacy Solutions will be upgraded to
-a new MediaPipe Solution. See the [Solutions guide](https://developers.google.com/mediapipe/solutions/guide#legacy)
-for details. The [code repository](https://github.com/google/mediapipe/tree/master/mediapipe)
-and prebuilt binaries for all MediaPipe Legacy Solutions will continue to be
-provided on an as-is basis.
+with open("my_video.mp4", "rb") as f:
+    resp = requests.post(
+        "http://127.0.0.1:8021/v1/bvh",
+        files={"upload": ("my_video.mp4", f, "video/mp4")},
+        params={"bvh_root_local": True},
+    )
 
-For more on the legacy solutions, see the [documentation](https://github.com/google/mediapipe/tree/master/docs/solutions).
+resp.raise_for_status()
+with open("output.bvh", "wb") as out:
+    out.write(resp.content)
 
-## Framework
+print("Frames:", resp.headers.get("X-Frames"))
+print("FPS:", resp.headers.get("X-FPS"))
+```
 
-To start using MediaPipe Framework, [install MediaPipe
-Framework](https://developers.google.com/mediapipe/framework/getting_started/install)
-and start building example applications in C++, Android, and iOS.
+For the full API reference see [bvh_api/API.md](bvh_api/API.md).
 
-[MediaPipe Framework](https://developers.google.com/mediapipe/framework) is the
-low-level component used to build efficient on-device machine learning
-pipelines, similar to the premade MediaPipe Solutions.
+---
 
-Before using MediaPipe Framework, familiarize yourself with the following key
-[Framework
-concepts](https://developers.google.com/mediapipe/framework/framework_concepts/overview.md):
+## Constraints
 
-*   [Packets](https://developers.google.com/mediapipe/framework/framework_concepts/packets.md)
-*   [Graphs](https://developers.google.com/mediapipe/framework/framework_concepts/graphs.md)
-*   [Calculators](https://developers.google.com/mediapipe/framework/framework_concepts/calculators.md)
+- Input must be `.mp4`
+- Max file size: 500 MB
+- Max frames processed: 30,000
+- Model: `pose_landmarker_lite` (auto-downloaded on first run)
 
-## Community
+---
 
-*   [Slack community](https://mediapipe.page.link/joinslack) for MediaPipe
-    users.
-*   [Discuss](https://groups.google.com/forum/#!forum/mediapipe) - General
-    community discussion around MediaPipe.
-*   [Awesome MediaPipe](https://mediapipe.page.link/awesome-mediapipe) - A
-    curated list of awesome MediaPipe related frameworks, libraries and
-    software.
+## Blender Import
+
+1. File → Import → Motion Capture (.bvh)
+2. BVH positions are in centimeters — scale the armature by `0.01` if 1 Blender unit = 1 m
+3. If the armature lies on its side, rotate −90° on X and apply
+
+See [bvh_api/BLENDER.md](bvh_api/BLENDER.md) for full details.
+
+---
 
 ## Contributing
 
-We welcome contributions. Please follow these
-[guidelines](https://github.com/google/mediapipe/blob/master/CONTRIBUTING.md).
-
-We use GitHub issues for tracking requests and bugs. Please post questions to
-the MediaPipe Stack Overflow with a `mediapipe` tag.
-
-## Resources
-
-### Publications
-
-*   [Bringing artworks to life with AR](https://developers.googleblog.com/2021/07/bringing-artworks-to-life-with-ar.html)
-    in Google Developers Blog
-*   [Prosthesis control via Mirru App using MediaPipe hand tracking](https://developers.googleblog.com/2021/05/control-your-mirru-prosthesis-with-mediapipe-hand-tracking.html)
-    in Google Developers Blog
-*   [SignAll SDK: Sign language interface using MediaPipe is now available for
-    developers](https://developers.googleblog.com/2021/04/signall-sdk-sign-language-interface-using-mediapipe-now-available.html)
-    in Google Developers Blog
-*   [MediaPipe Holistic - Simultaneous Face, Hand and Pose Prediction, on
-    Device](https://ai.googleblog.com/2020/12/mediapipe-holistic-simultaneous-face.html)
-    in Google AI Blog
-*   [Background Features in Google Meet, Powered by Web ML](https://ai.googleblog.com/2020/10/background-features-in-google-meet.html)
-    in Google AI Blog
-*   [MediaPipe 3D Face Transform](https://developers.googleblog.com/2020/09/mediapipe-3d-face-transform.html)
-    in Google Developers Blog
-*   [Instant Motion Tracking With MediaPipe](https://developers.googleblog.com/2020/08/instant-motion-tracking-with-mediapipe.html)
-    in Google Developers Blog
-*   [BlazePose - On-device Real-time Body Pose Tracking](https://ai.googleblog.com/2020/08/on-device-real-time-body-pose-tracking.html)
-    in Google AI Blog
-*   [MediaPipe Iris: Real-time Eye Tracking and Depth Estimation](https://ai.googleblog.com/2020/08/mediapipe-iris-real-time-iris-tracking.html)
-    in Google AI Blog
-*   [MediaPipe KNIFT: Template-based feature matching](https://developers.googleblog.com/2020/04/mediapipe-knift-template-based-feature-matching.html)
-    in Google Developers Blog
-*   [Alfred Camera: Smart camera features using MediaPipe](https://developers.googleblog.com/2020/03/alfred-camera-smart-camera-features-using-mediapipe.html)
-    in Google Developers Blog
-*   [Real-Time 3D Object Detection on Mobile Devices with MediaPipe](https://ai.googleblog.com/2020/03/real-time-3d-object-detection-on-mobile.html)
-    in Google AI Blog
-*   [AutoFlip: An Open Source Framework for Intelligent Video Reframing](https://ai.googleblog.com/2020/02/autoflip-open-source-framework-for.html)
-    in Google AI Blog
-*   [MediaPipe on the Web](https://developers.googleblog.com/2020/01/mediapipe-on-web.html)
-    in Google Developers Blog
-*   [Object Detection and Tracking using MediaPipe](https://developers.googleblog.com/2019/12/object-detection-and-tracking-using-mediapipe.html)
-    in Google Developers Blog
-*   [On-Device, Real-Time Hand Tracking with MediaPipe](https://ai.googleblog.com/2019/08/on-device-real-time-hand-tracking-with.html)
-    in Google AI Blog
-*   [MediaPipe: A Framework for Building Perception Pipelines](https://arxiv.org/abs/1906.08172)
-
-### Videos
-
-*   [YouTube Channel](https://www.youtube.com/c/MediaPipe)
+Pull requests welcome. Please follow the [contribution guidelines](CONTRIBUTING.md).
