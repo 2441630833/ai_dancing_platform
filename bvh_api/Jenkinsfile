@@ -1,0 +1,108 @@
+pipeline {
+    agent any
+    environment {
+        IMAGE_NAME = 'bvh-api'
+        IMAGE_TAG = 'latest'
+        CONTAINER_NAME = 'bvh-api-container'
+        NETWORK_NAME = 'bvh-api-net'
+        PORT = '8021'
+    }
+    stages {
+        stage('Resolve build context') {
+            steps {
+                script {
+                    // Monorepo: Dockerfile under bvh_api/. Single-repo job: workspace root is bvh_api.
+                    env.DOCKER_CONTEXT = fileExists('Dockerfile') ? '.' : 'bvh_api'
+                    if (!fileExists("${env.DOCKER_CONTEXT}/Dockerfile")) {
+                        error "Dockerfile not found (tried . and bvh_api). Set workspace to repo root or bvh_api."
+                    }
+                    echo "Docker build context: ${env.DOCKER_CONTEXT}"
+                }
+            }
+        }
+
+        stage('Check Running Container') {
+            steps {
+                script {
+                    try {
+                        sh "docker container inspect ${CONTAINER_NAME}"
+                        echo "Container ${CONTAINER_NAME} exists. Stopping and removing..."
+                        sh "docker container stop ${CONTAINER_NAME}"
+                        sh "docker container rm ${CONTAINER_NAME}"
+                    } catch (Exception e) {
+                        echo "No existing container named ${CONTAINER_NAME} found."
+                    }
+
+                    try {
+                        sh "docker image inspect ${IMAGE_NAME}:${IMAGE_TAG}"
+                        echo "Image ${IMAGE_NAME}:${IMAGE_TAG} exists. Removing..."
+                        sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG} -f"
+                    } catch (Exception e) {
+                        echo "No existing image ${IMAGE_NAME}:${IMAGE_TAG} found."
+                    }
+                }
+            }
+        }
+
+        stage('Ensure Docker network') {
+            steps {
+                script {
+                    try {
+                        sh "docker network inspect ${NETWORK_NAME}"
+                        echo "Network ${NETWORK_NAME} already exists."
+                    } catch (Exception e) {
+                        echo "Creating network ${NETWORK_NAME}..."
+                        sh "docker network create ${NETWORK_NAME}"
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    dir(env.DOCKER_CONTEXT) {
+                        echo "Building Docker image ${IMAGE_NAME}:${IMAGE_TAG}..."
+                        sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+                    }
+                }
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                script {
+                    echo "Starting container ${CONTAINER_NAME} on port ${PORT}..."
+                    sh """
+                        docker run -d --name ${CONTAINER_NAME} \
+                            -p ${PORT}:${PORT} \
+                            --network ${NETWORK_NAME} \
+                            -e TZ=Asia/Shanghai \
+                            ${IMAGE_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+
+        stage('Clean Up') {
+            steps {
+                script {
+                    echo "Cleaning up dangling Docker images..."
+                    sh "docker image prune -f"
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "BVH API deployment successful."
+        }
+        failure {
+            echo "BVH API deployment failed."
+        }
+        always {
+            echo "Pipeline execution completed."
+        }
+    }
+}
